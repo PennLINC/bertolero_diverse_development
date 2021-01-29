@@ -1,25 +1,66 @@
-## Welcome to GitHub Pages
+---
+layout: default
+title: Project Template
+parent: Documentation
+has_children: false
+has_toc: false
+nav_order: 3
+---
 
-You can use the [editor on GitHub](https://github.com/PennLINC/bertolero_diverse_development/edit/gh-pages/index.md) to maintain and preview the content for your website in Markdown files.
 
-Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
+### Project Title
 
-### Markdown
+Diverse Club Development
 
-Markdown is a lightweight and easy-to-use syntax for styling your writing. It includes conventions for
+### Brief Project Description
 
-```markdown
-Syntax highlighted code block
+There is a rich club. I found the diverse club. Now we chart thier development.
 
-# Header 1
-## Header 2
-### Header 3
+### Project Lead(s) 
 
-- Bulleted
-- List
+Max Bertolero
 
-1. Numbered
-2. List
+### Faculty Lead(s)
+
+Theodore Satterthwaite
+### Analytic Replicator
+
+Adam Pines
+
+### Collaborators
+
+Adam Pines, Bart Larsen
+
+### Project Start Date
+
+January 1st, 2021
+
+### Current Project Status
+
+See the [Stages of a Project](https://pennlinc.github.io/docs/LabHome/ProjectStages/) page
+
+### Dataset
+
+PNC
+
+### Github repo
+
+https://github.com/PennLINC/bertolero_diverse_development
+
+### Path to data on filesystem
+
+Full path to project path on relevant computing cluster (i.e., CUBIC, PMACS, etc)
+
+### Slack Channel
+
+#bertolero_diverse_development
+
+### Current work products
+
+OHBM 2021
+
+### Code documentation
+
 
 **Bold** and _Italic_ and `Code` text
 
