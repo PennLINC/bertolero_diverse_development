@@ -10,11 +10,11 @@ nav_order: 3
 
 ### Project Title
 
-Diverse Club Development
+Dissociable patterns of rich and diverse club development in youth
 
 ### Brief Project Description
 
-There is a rich club. I found the diverse club. Now we chart thier development.
+The human brain can be analyzed as a network—a collection of interconnected regions1–4. Each brain region has a unique connectivity pattern. The set of regions called the rich club have many strong connections5. The diverse club has connections spread diversely across the brain’s various sub-networks6; this diversity is measured by the participation coefficient (pc)7. The rich and diverse clubs are named as such because members are strongly interconnected. Here, we examined how the interconnectedness of these clubs, defined in adults, evolved over age and related to executive function in youth.
 
 ### Project Lead(s) 
 
@@ -23,13 +23,14 @@ Max Bertolero
 ### Faculty Lead(s)
 
 Theodore Satterthwaite
+
 ### Analytic Replicator
 
 Adam Pines
 
 ### Collaborators
 
-Adam Pines, Bart Larsen
+Bart Larsen, Azeez Adebimpe, Raquel E. Gur, Ruben C. Gur, Tyler M. Moore, David R. Roalf, Russel T. Shinohara, Danielle S. Bassett
 
 ### Project Start Date
 
@@ -37,7 +38,8 @@ January 1st, 2021
 
 ### Current Project Status
 
-See the [Stages of a Project](https://pennlinc.github.io/docs/LabHome/ProjectStages/) page
+10) Data analysis and documentation
+See the [Stages of a Project](https://pennlinc.github.io/docs/LabHome/ProjectStages/)
 
 ### Dataset
 
