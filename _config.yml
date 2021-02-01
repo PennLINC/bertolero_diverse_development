@@ -1,1 +1,4 @@
-theme: jekyll-theme-cayman
+title: <br> 
+logo: ./diverse_club_image.png
+description: <br>Diverse Club Development
+theme: jekyll-theme-minimal
