@@ -7,7 +7,6 @@ has_toc: false
 nav_order: 3
 ---
 
-
 ### Project Title
 
 Dissociable patterns of rich and diverse club development in youth
@@ -38,12 +37,11 @@ January 1st, 2021
 
 ### Current Project Status
 
-10) Data analysis and documentation
-See the [Stages of a Project](https://pennlinc.github.io/docs/LabHome/ProjectStages/)
+Step (10) Data analysis and documentation of the [Stages of a Project](https://pennlinc.github.io/docs/LabHome/ProjectStages/)
 
 ### Dataset
 
-PNC
+PNC, likely to be extended to all RBC data
 
 ### Github repo
 
@@ -51,7 +49,7 @@ https://github.com/PennLINC/bertolero_diverse_development
 
 ### Path to data on filesystem
 
-Full path to project path on relevant computing cluster (i.e., CUBIC, PMACS, etc)
+PMACS
 
 ### Slack Channel
 
