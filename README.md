@@ -1,1 +1,1 @@
-# diverse_development
+How does the diverse club develop?
