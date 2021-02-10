@@ -1,34 +1,43 @@
 #!/cbica/home/bertolem/anaconda3/bin/python
-import numpy as np
-import pandas as pd
-import club
-import os
+
+#my stuff
 import graph_metrics
 import write_brains
+
+#basic
+import numpy as np
+import pandas as pd
+import os
+import itertools 
 from multiprocessing import Pool
+import random
+
+#the best python graph lib 
 import igraph
 from igraph import VertexClustering
+
+#statsmodels / stats
+import statsmodels.api as sm
 from statsmodels.nonparametric.smoothers_lowess import lowess
+from statsmodels.stats.mediation import Mediation
+import statsmodels.genmod.families.links as links
+from scipy.stats import pearsonr  
+
+#sklearn 
 from sklearn.linear_model import LinearRegression
-import seaborn as sns
-import itertools 
-
-
+from sklearn.linear_model import RidgeCV
+from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
+from sklearn.model_selection import KFold, ShuffleSplit
 
-
-import statsmodels.api as sm
-
-from scipy.stats import pearsonr  
-from statsmodels.stats.mediation import Mediation
-import statsmodels.genmod.families.links as links
+#plotting
+import seaborn as sns
 import matplotlib.pylab as plt
 import matplotlib as mpl
-
-import random
-
+global full_width
+full_width = 7.44094 #nature width for figures
 plt.rcParams['pdf.fonttype'] = 42
 plt.rcParams['ps.fonttype'] = 42
 plt.rcParams['font.sans-serif'] = "Palatino"
@@ -41,6 +50,8 @@ path = '/cbica/home/bertolem/Palatino/Palatino.ttf'
 mpl.font_manager.FontProperties(fname=path)
 mpl.rcParams['font.family'] = 'serif'
 sns.set(style='white',font='Palatino')
+
+
 # this is where the developmental matrices are
 global matrix_path
 matrix_path = '/cbica/projects/pinesParcels/dropbox/PNC_schaef400'
@@ -51,7 +62,7 @@ sub_df = pd.read_csv('/cbica/projects/pinesParcels/dropbox/scanid_Age_Sex_Motion
 
 # make loading/saving things easier
 global homedir
-homedir = '/cbica/home/bertolem/diverse_dev/'
+homedir = '/cbica/home/bertolem/diverse_development/'
 
 # cut off for the club
 global rank_threshold
@@ -82,8 +93,11 @@ r_color = np.array([112, 144, 144,255])/255.
 rr_color = np.array([78,101,101,255])/255.
 
 
-global full_width
-full_width = 7.44094
+def make_dnn_structure(neurons = 80,layers = 10):
+	neurons_array = np.zeros((layers))
+	neurons_array[:] = neurons
+	neurons_array = tuple(neurons_array.astype(int))
+	return neurons_array
 
 def vcorrcoef(X,y):
 	Xm = np.reshape(np.mean(X,axis=1),(X.shape[0],1))
@@ -405,29 +419,25 @@ def interactions():
 		result_df = pd.read_html(model.summary().tables[1].as_html(),header=0,index_col=0)[0]
 		ef_pc_coefs[node] = result_df['coef'][-1]
 
-	print (pearsonr(club_pc_coefs,adult_pc))
-	print (pearsonr(ef_pc_coefs,adult_pc))
+	
 
 	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(club_pc_coefs,1),sns.diverging_palette(220, 10,n=1001)))
 	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/pc:age-pc-coefs_clubness~age+pc+pc-age'%(homedir))
 
-	# colors = np.array(write_brains.make_heatmap(write_brains.cut_data(ef_pc_coefs,1),sns.diverging_palette(220, 10,n=1001)))
-	# write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/pc_coefs_ef~clubness+pc'%(homedir))
-
 	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(adult_pc,1),sns.diverging_palette(220, 10,n=1001)))
 	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/adult_pc'%(homedir))
 
-
-	age_pc_corr = np.zeros((400))
-	ef_pc_corr = np.zeros((400))
-	q_pc_corr = np.zeros((400))
-	club_pc_corr = np.zeros((400))
+	age_pc_corr = np.zeros((400)) #regions get stronger pc with age
+	ef_pc_corr = np.zeros((400)) #regions explain non-age-related ef
 
 	for i in range(400):
 		age_pc_corr[i] = pearsonr(ages,pc[:,i])[0]
 		ef_pc_corr[i] = pearsonr(age_r_ef,pc[:,i])[0]
-		q_pc_corr[i] = pearsonr(q.mean(axis=-1),pc[:,i])[0]
-		club_pc_corr[i] = pearsonr(diverse_clubness.mean(axis=-1),pc[:,i])[0]
+
+	print (pearsonr(club_pc_coefs,adult_pc))
+	print (pearsonr(ef_pc_corr,adult_pc))
+	print (pearsonr(club_pc_coefs,ef_pc_corr))
+
 
 	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(ef_pc_corr,1),sns.diverging_palette(220, 10,n=1001)))
 	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/ef_pc_corr'%(homedir))
@@ -455,7 +465,7 @@ def interactions():
 	plt.text(0.1,.9,'r=%s'%(r),transform=plt.gca().transAxes)
 	plt.savefig('ef_pc_corr.pdf')  
 
-def full_correlations():
+def save_full_correlations():
 	matrix = []
 	for subject in sub_df['masteref.bblid']:
 		matrix.append(np.loadtxt('%s/%s_Schaefer400_network.txt'%(matrix_path,subject)))
@@ -477,19 +487,115 @@ def full_correlations():
 	for i in range(400):
 		pc_corr_matrix[i] = vcorrcoef(matrix.reshape(693,-1).swapaxes(0,1),pc[:,i]).reshape(400,400)
 		s_corr_matrix[i] = vcorrcoef(matrix.reshape(693,-1).swapaxes(0,1),strength[:,i]).reshape(400,400)
+	np.save('/%s/data/pc_edge_corr'%(homedir),pc_corr_matrix)
+	np.save('/%s/data/strength_edge_corr'%(homedir),s_corr_matrix)
 
-	sns.heatmap(np.nanmean(pc_corr_matrix,axis=0),vmin=-0.04,vmax=0.04)  
-	plt.xticks(np.arange(400)[::10],membership[::10]) 
-	plt.yticks(np.arange(400)[::10],membership[::10]) 
-		
+def analyze_full_correlations():
+	pc_corr_matrix = ('/%s/data/pc_edge_corr'%(homedir))
+	strength_corr_matrix =('/%s/data/strength_edge_corr'%(homedir))
+
+global model_matrix
+global model_kf 
+global model_subjects
+global model_age_r_ef
+global model_neurons_array
+def multi_performance(node):
+	print (node)
+	edges = model_matrix[:,node]
+	prediction_array = np.zeros((model_matrix.shape[0]))
+	for train, test in model_kf.split(model_subjects):
+		# model = MLPRegressor(solver='lbfgs',hidden_layer_sizes=model_neurons_array,max_iter=10000)
+		model = RidgeCV(alphas=[1e-3, 1e-2, 1e-1,0.2,.25,0.30,0.35,.45,0.50,0.60,0.70,0.80,.90,1])
+		model.fit(edges[train],model_age_r_ef[train])
+		prediction_array[test] = model.predict(edges[test])
+	return prediction_array
+
 def performance():
+	global model_matrix
+	global model_kf 
+	global model_subjects
+	global model_age_r_ef
+	global model_neurons_array
+	ages = sub_df['masteref.Age'].values
+	ef = sub_df['masteref.F1_Exec_Comp_Cog_Accuracy'].values
+	model_age_r_ef = remove(ages.reshape(-1,1),ef)
+	model_subjects =  sub_df['masteref.bblid'].values
 
-# qsub -l h_vmem=40G,s_vmem=40G -pe threaded 40 -N clubs -V -j y -b y -o /cbica/home/bertolem/sge/ -e /cbica/home/bertolem/sge/ //cbica/home/bertolem/diverse_dev/diverse_dev.py
+	rich_matrix = np.zeros((sub_df.shape[0],80,80))
+	diverse_matrix = np.zeros((sub_df.shape[0],80,80))
+	full_matrix = np.zeros((sub_df.shape[0],400,400))
+	for sidx,subject in enumerate(sub_df['masteref.bblid']):
+		m = np.loadtxt('%s/%s_Schaefer400_network.txt'%(matrix_path,subject))
+		full_matrix[sidx] = m
+		diverse_matrix[sidx] = m[np.ix_(adult_pc_club,adult_pc_club)]
+		rich_matrix[sidx] = m[np.ix_(adult_degree_club,adult_degree_club)]
+
+
+	model_neurons_array = make_dnn_structure(80,10)
+	model_kf = KFold(5,shuffle=True,random_state=315)
+	model_subjects = sub_df['masteref.bblid'].values   
+	for club,model_matrix in zip(['full','rich','diverse'],[full_matrix,rich_matrix,diverse_matrix]):
+		print (club)
+		pool = Pool(40)
+		full_prediction = pool.map(multi_performance,range(model_matrix.shape[-1]))
+		np.save('/%s/data/%s_predictions.npy'%(homedir,club),full_prediction)
+		1/0
+
+def analyze_performance():
+	rich_prediction = np.load('/%s/data/rich_predictions.npy'%(homedir))
+	diverse_prediction = np.load('/%s/data/diverse_predictions.npy'%(homedir))
+	full_prediction = np.load('/%s/data/full_predictions.npy'%(homedir))
+
+	# club_prediction = np.mean([rich_prediction.mean(axis=0),rich_prediction.mean(axis=0)],axis=0)
+	ages = sub_df['masteref.Age'].values
+	ef = sub_df['masteref.F1_Exec_Comp_Cog_Accuracy'].values
+	age_r_ef = remove(ages.reshape(-1,1),ef)
+	boot_iters = 10000
+	rich_acc = np.zeros((boot_iters))
+	diverse_acc = np.zeros((boot_iters))
+	sample_size = 80
+	for booty in range(boot_iters):
+		sample = np.random.randint(0,sample_size,sample_size)
+		dx,rx = np.mean(diverse_prediction[sample],axis=0),np.mean(rich_prediction[sample],axis=0)
+		diverse_acc[booty],rich_acc[booty] = pearsonr(dx,age_r_ef)[0],pearsonr(rx,age_r_ef)[0]
+	p = len(diverse_acc[diverse_acc<np.mean(rich_acc)])/boot_iters
+	print (p)
+
+	plt.close()
+	f, (ax1, ax2) = plt.subplots(1,2, sharex=True,sharey=True)
+	f.set_figwidth((full_width/3)*2)
+	f.set_figheight(2.5)
+	sns.regplot(np.mean(diverse_prediction,axis=0),age_r_ef,ax=ax1,color=d_color,scatter_kws={'edgecolors':dd_color})  
+	r = np.around(pearsonr(np.mean(diverse_prediction,axis=0),age_r_ef)[0],3)   
+	ax1.xaxis.set_major_locator(plt.MaxNLocator(5))
+	ax1.yaxis.set_major_locator(plt.MaxNLocator(5))
+	plt.sca(ax1)
+	plt.ylabel('executive function')
+	plt.xlabel('predicted executive function')
+	plt.text(0.65,.1,'r=%s'%(r),transform=ax1.transAxes)
+	plt.sca(ax2)
+	sns.regplot(np.mean(rich_prediction,axis=0),age_r_ef,ax=ax2,color=r_color,scatter_kws={'edgecolors':rr_color})  
+	r = np.around(pearsonr(np.mean(rich_prediction,axis=0),age_r_ef)[0],3)   
+	plt.text(0.65,.1,'r=%s'%(r),transform=ax2.transAxes)
+	plt.xlabel('predicted executive function')
+	
+	ax2.xaxis.set_major_locator(plt.MaxNLocator(5))
+	ax2.yaxis.set_major_locator(plt.MaxNLocator(5))
+	plt.tight_layout()
+	sns.despine()
+	plt.savefig('/%s/figures/predictions.pdf'%(homedir))  
+
+
+
+
+# qsub -l h_vmem=40G,s_vmem=40G -pe threaded 21 -N clubs -V -j y -b y -o /cbica/home/bertolem/sge/ -e /cbica/home/bertolem/sge/ //cbica/home/bertolem/diverse_development/diverse_development.py
+
+# qsub -l h_vmem=20G,s_vmem=20G -N clubs -V -j y -b y -o /cbica/home/bertolem/sge/ -e /cbica/home/bertolem/sge/ //cbica/home/bertolem/diverse_development/diverse_development.py
+
 # hcp_metrics()
 # run_metrics()
-
-
-
+# performance()
+# save_full_correlations()
 
 
 
