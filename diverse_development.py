@@ -1,29 +1,31 @@
 #!/cbica/home/bertolem/anaconda3/bin/python
-
-#my stuff
-import graph_metrics
-import write_brains
-
-#basic
+# our tools
+import pennlinckit
+from pennlinckit import utils,brain,data,plotting
+#basic python modules
+import sys
+import os
+#
+assert sys.executable == '/cbica/home/bertolem/anaconda3/bin/python' #make sure you are using my python
 import numpy as np
 import pandas as pd
-import os
-import itertools 
+import itertools
 from multiprocessing import Pool
 import random
 
-#the best python graph lib 
-import igraph
-from igraph import VertexClustering
+global homedir
+import matplotlib.pylab as plt
+import seaborn as sns
+import time
 
 #statsmodels / stats
 import statsmodels.api as sm
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from statsmodels.stats.mediation import Mediation
 import statsmodels.genmod.families.links as links
-from scipy.stats import pearsonr  
+from scipy.stats import pearsonr,spearmanr
 
-#sklearn 
+#sklearn
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import RidgeCV
 from sklearn.neural_network import MLPRegressor
@@ -31,249 +33,135 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
 from sklearn.model_selection import KFold, ShuffleSplit
+from sklearn.cluster import KMeans
 
-#plotting
-import seaborn as sns
-import matplotlib.pylab as plt
-import matplotlib as mpl
-global full_width
-full_width = 7.44094 #nature width for figures
-plt.rcParams['pdf.fonttype'] = 42
-plt.rcParams['ps.fonttype'] = 42
-plt.rcParams['font.sans-serif'] = "Palatino"
-plt.rcParams['font.serif'] = "Palatino"
-plt.rcParams['mathtext.fontset'] = 'custom'
-plt.rcParams['mathtext.it'] = 'Palatino:italic'
-plt.rcParams['mathtext.bf'] = 'Palatino:bold'
-plt.rcParams['mathtext.cal'] = 'Palatino'
-path = '/cbica/home/bertolem/Palatino/Palatino.ttf'
-mpl.font_manager.FontProperties(fname=path)
-mpl.rcParams['font.family'] = 'serif'
-sns.set(style='white',font='Palatino')
-
-
-# this is where the developmental matrices are
-global matrix_path
-matrix_path = '/cbica/projects/pinesParcels/dropbox/PNC_schaef400'
-
-# load the age, executive function, motion stuff
-global sub_df
-sub_df = pd.read_csv('/cbica/projects/pinesParcels/dropbox/scanid_Age_Sex_Motion_EF.csv')
-
-# make loading/saving things easier
 global homedir
 homedir = '/cbica/home/bertolem/diverse_development/'
-
-# cut off for the club
+global atlas_path
+atlas_path = '/{0}/Schaefer2018_400Parcels_17Networks_order.dlabel.nii'.format(homedir)
 global rank_threshold
 rank_threshold = 80
-
-# from the adult HCP
-global adult_pc
-adult_pc = np.load('/%s/data/hcp_pc.npy'%(homedir)).mean(axis=0)
-global adult_pc_club
-adult_pc_club = adult_pc>np.percentile(adult_pc,rank_threshold)
-
-# from the adult HCP
-global adult_degree
-adult_degree = np.load('/%s/data/hcp_strength.npy'%(homedir)).mean(axis=0)
-global adult_degree_club
-adult_degree_club = adult_degree>np.percentile(adult_degree,rank_threshold)
-
-global atlas_path
-atlas_path = '/%s/Schaefer2018_400Parcels_17Networks_order.dlabel.nii'%(homedir)
 
 global d_color
 global r_color
 global dd_color
 global rr_color
-d_color = np.array([119,136,153,255])/255.
-dd_color = np.array([112,128,144,255])/255.
-r_color = np.array([112, 144, 144,255])/255.
-rr_color = np.array([78,101,101,255])/255.
+d_color = np.array([119,158,203,255])/255.
+r_color = np.array([120,162,123,255])/255.
 
+def make_data(source,cores=20):
+	"""
+	Make the datasets and run network metrics
+	"""
+	data = pennlinckit.data.dataset(source,task='**', parcels='Schaefer417',fd_scrub=.2)
+	data.load_matrices()
+	data.filter(way='>',value=100,column='n_frames')
+	score_bdp(data)
+	data.network = pennlinckit.network.make_networks(data,yeo_partition=7,cores=cores-1)
+	pennlinckit.utils.save_dataset(data,'/{0}/data/{1}.data'.format(homedir,source))
 
-def make_dnn_structure(neurons = 80,layers = 10):
-	neurons_array = np.zeros((layers))
-	neurons_array[:] = neurons
-	neurons_array = tuple(neurons_array.astype(int))
-	return neurons_array
+def submit_make_data(source):
+	"""
+	The above function makes the datasets (including the networks) we are going to use to generate uncomment out the code below and
+	"""
+	script_path = '/{0}/diverse_development.py make_data {1}'.format(homedir,source) #it me
+	pennlinckit.utils.submit_job(script_path,'d_{0}'.format(source),RAM=40,threads=20)
 
-def vcorrcoef(X,y):
-	Xm = np.reshape(np.mean(X,axis=1),(X.shape[0],1))
-	ym = np.mean(y)
-	r_num = np.sum((X-Xm)*(y-ym),axis=1)
-	r_den = np.sqrt(np.sum((X-Xm)**2,axis=1)*np.sum((y-ym)**2))
-	r = r_num/r_den
-	return r
+def load_data(source,filters=['bpd_score','meanFD']):
+	data = pennlinckit.utils.load_dataset('/{0}/data/{1}.data'.format(homedir,source))
+	gender = np.zeros((data.subject_measures.shape[0]))
+	if source == 'hcpya':
+		gender[data.subject_measures.Gender=='F'] = 1
+	if source == 'hcpd-dcan':
+		gender[data.subject_measures.sex=='F'] = 1
+	data.subject_measures['gender_dummy'] = gender
+	for f in filters:
+		data.filter(way='has_subject_measure',value=f)
+	return data
 
-def yeo_partition(n_networks=17):
-	if n_networks == 17:
-		full_dict = {'VisCent':0,'VisPeri':1,'SomMotA':2,'SomMotB':3,'DorsAttnA':4,'DorsAttnB':5,'SalVentAttnA':6,
-		'SalVentAttnB':7,'Limbic':8,'ContA':9,'ContB':10,'ContC':11,'DefaultA':12,'DefaultB':13,'DefaultC':14,'TempPar':15}
-	if n_networks==7:
-		full_dict = {'VisCent':0,'VisPeri':0,'SomMotA':1,'SomMotB':1,'DorsAttnA':2,'DorsAttnB':2,'SalVentAttnA':3,
-		'SalVentAttnB':3,'Limbic':4,'ContA':5,'ContB':5,'ContC':5,'DefaultA':6,'DefaultB':6,'DefaultC':6,'TempPar':6}
-		name_dict = {0:'Visual',1:'Sensory\nMotor',2:'Dorsal\nAttention',3:'Ventral\nAttention',4:'Limbic',5:'Control',6:'Default'}
-	membership = np.zeros((400)).astype(str)
-	membership_ints = np.zeros((400)).astype(int)
-	yeo_df = pd.read_csv('//cbica/home/bertolem/deep_prediction//Schaefer2018_400Parcels_17Networks_order.txt',sep='\t',header=None,names=['name','R','G','B','0'])['name']
-	yeo_colors = pd.read_csv('//cbica/home/bertolem/deep_prediction//Schaefer2018_400Parcels_17Networks_order.txt',sep='\t',header=None,names=['name','r','g','b','0'])
-	yeo_colors = np.array([yeo_colors['r'],yeo_colors['g'],yeo_colors['b']]).transpose() /256.
-	for i,n in enumerate(yeo_df):
-		if n_networks == 17:
-			membership[i] = n.split('_')[2]
-			membership_ints[i] = int(full_dict[n.split('_')[2]])
-		if n_networks == 7:
-			membership_ints[i] = int(full_dict[n.split('_')[2]])
-			membership[i] = name_dict[membership_ints[i]]
-	return membership,membership_ints,yeo_colors
+def load_pnc():
+	"""
+	A function to load the PNC data and the network data I made above.
+	This ensures I load the same filters everytime!
+	"""
+	data = pennlinckit.data.dataset('pnc')
+	data.load_matrices('rest')
+	data.filter('cognitive')
+	data.filter('==',value=0,column='restRelMeanRMSMotionExclude')
+	data.network = pennlinckit.utils.load_dataset('/%s/data/pnc.networks'%(homedir))
+	data.measures['sex'] = data.measures['sex'].values - 1 #makes this easy to do regression
+	return data
 
-membership,membership_ints,yeo_colors = yeo_partition(7)
-names = ['VisCent','VisPeri','SomMotA','SomMotB','DorsAttnA','DorsAttnB','SalVentAttnA','SalVentAttnB','Limbic','ContA','ContB','ContC','DefaultA','DefaultB','DefaultC','TempPar']
+def remove_motion_sex(data,y):
+	"""
+	removes motion and sex from y in dataobject data
+	"""
+	motion = pnc.measures['restRelMeanRMSMotion'].values
+	sex = pnc.measures.sex
+	noise = np.array([motion,sex]).transpose()
+	y_residuals = pennlinckit.utils.remove(noise,y)
+	return y_residuals
 
-def load_hcp_subjects():
-	df = pd.read_csv('/cbica/home/bertolem/deep_prediction/S1200.csv')
-	subjects = df.Subject[df['3T_Full_MR_Compl'].values==True].values
-	for s in subjects:
-		if os.path.exists('/cbica/home/bertolem/deep_prediction//all_matrices/%s_matrix.npy'%(s)) == False:
-			subjects = subjects[subjects!=s]
-	return subjects
+def load_hcp_metrics():
+	"""
+	loads previously made network data object
+	"""
+	hcp = pennlinckit.utils.load_dataset('/%s/data/hcp.networks'%(homedir))
+	hcp.pc = hcp.pc.mean(axis=0).mean(axis=0)
+	hcp.strength = hcp.strength.mean(axis=0).mean(axis=0)
+	hcp.diverse_club = hcp.pc > np.percentile(hcp.pc,rank_threshold)
+	hcp.rich_club = hcp.strength > np.percentile(hcp.strength,rank_threshold)
+	return hcp
 
-def load_hcp_matrices(subjects):
-	matrices = []
-	for s in subjects: 
-		matrices.append(np.load('//cbica/home/bertolem/deep_prediction//all_matrices/%s_matrix.npy' %(s)))
-	return matrices
-
-def hcp_metrics_multi_funct(m):
-	m = m + m.transpose()
-	m = np.tril(m,-1)
-	m = m + m.transpose()
-	q = np.zeros((5))
-	pc = np.zeros((5,400))
-	strength = np.zeros((5,400))
-	for idx,cost in enumerate([0.15,0.1,0.05,0.025,0.01]):
-		graph = graph_metrics.matrix_to_igraph(m.copy(), cost, binary=False, check_tri=False, interpolation='midpoint', normalize=False, mst=True, test_matrix=False)
-		vc = VertexClustering(graph,membership=membership_ints,modularity_params={'weights':'weight'})
-		pc[idx] = graph_metrics.part_coef(np.array(graph.get_adjacency(attribute='weight').data),membership_ints)
-		q[idx] = vc.modularity
-		strength[idx] = vc.graph.strength(weights='weight')
-	return np.nanmean(pc,axis=0),np.nanmean(q),np.nanmean(strength,axis=0)
-
-def hcp_metrics():
-	subjects = load_hcp_subjects()
-	matrices = load_hcp_matrices(subjects)
-	pool = Pool(38)
-	results = pool.map(hcp_metrics_multi_funct,matrices)
-	pc = []
-	q = []
-	s = []
-	for r in results:
-		pc.append(r[0])
-		q.append(r[1])
-		s.append(r[2])
-	np.save('/%s/data/hcp_pc.npy'%(homedir),pc)
-	np.save('/%s/data/hcp_q.npy'%(homedir),q)
-	np.save('/%s/data/hcp_strength.npy'%(homedir),s)
-
-def metrics_multi_funct(subject):
-	matrix = np.loadtxt('%s/%s_Schaefer400_network.txt'%(matrix_path,subject))
-	diverse_clubness = np.zeros((5))
-	rich_clubness = np.zeros((5))
-	diverse_2_other = np.zeros((5))
-	rich_2_other = np.zeros((5))
-	q = np.zeros((5))
-	pc = np.zeros((5,400))
-	strength = np.zeros((5,400))
-	for idx,cost in enumerate([0.15,0.1,0.05,0.025,0.01]):
-		graph = graph_metrics.matrix_to_igraph(matrix, cost, binary=False, check_tri=False, interpolation='midpoint', normalize=False, mst=True, test_matrix=False)
-		vc = VertexClustering(graph,membership=membership_ints,modularity_params={'weights':'weight'})
-		pc[idx] = graph_metrics.part_coef(np.array(graph.get_adjacency(attribute='weight').data),membership_ints)
-		q[idx] = vc.modularity
-		strength[idx] = vc.graph.strength(weights='weight')
-		dc = matrix[np.ix_(adult_pc_club,adult_pc_club)][np.triu_indices(80,1)].sum()
-		rc = matrix[np.ix_(adult_degree_club,adult_degree_club)][np.triu_indices(80,1)].sum()
-		diverse_clubness[idx] = dc
-		rich_clubness[idx] = rc
-		dc_2_other = matrix[np.ix_(adult_pc_club,adult_pc_club==False)].sum()/2.
-		rc_2_other = matrix[np.ix_(adult_degree_club,adult_degree_club==False)].sum()/2.
-		diverse_2_other = dc_2_other
-		rich_2_other = rc_2_other
-	return [q,pc,strength,rich_clubness,diverse_clubness,rc_2_other,dc_2_other]
-
-def run_metrics():
-	pool = Pool(38)
-	club_results = pool.map(metrics_multi_funct,sub_df['masteref.bblid'].values)
-	n_subs = len(sub_df['masteref.bblid'].values)
-	diverse_clubness = np.zeros((n_subs,5))
-	rich_clubness = np.zeros((n_subs,5))
-	diverse_other = np.zeros((n_subs,5))
-	rich_other = np.zeros((n_subs,5))
-	q = np.zeros((n_subs,5))
-	pc = np.zeros((n_subs,5,400))
-	strength = np.zeros((n_subs,5,400))
-	for s in range(n_subs):
-		q[s],pc[s],strength[s],rich_clubness[s],diverse_clubness[s],rich_other[s],diverse_other[s] = club_results[s]
-	np.save('/%s/data/q.npy'%(homedir),q)
-	np.save('/%s/data/pc.npy'%(homedir),pc)
-	np.save('/%s/data/rich.npy'%(homedir),rich_clubness)
-	np.save('/%s/data/diverse.npy'%(homedir),diverse_clubness)
-	np.save('/%s/data/rich_other.npy'%(homedir),rich_other)
-	np.save('/%s/data/diverse_other.npy'%(homedir),diverse_other)
-	np.save('/%s/data/strength.npy'%(homedir),strength)
-
-def remove(remove_me,y):
-	y_model = LinearRegression().fit(remove_me,y) 
-	y_predict = y_model.predict(remove_me) # predicted values
-	y_residual =  y - y_predict # residual values
-	return y_residual
-
-def age_by_club_brains():
-	global adult_degree_club
-	global adult_pc_club
+def hcp_club_brains():
+	"""
+	makes the brains that have the HCP diverse and rich club
+	"""
+	hcp = load_hcp_metrics()
 	colors = np.zeros((400,4))
 	for i in range(400):
-		if adult_pc_club[i] and adult_degree_club[i]:
+		if hcp.diverse_club[i] and hcp.rich_club[i]:
 			colors[i] = [1,1,1,1]
 			continue
-		if adult_pc_club[i]:
+		if hcp.diverse_club[i]:
 			colors[i] = d_color
-		if adult_degree_club[i]:
+		if hcp.rich_club[i]:
 			colors[i] = r_color
-	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/clubs_mask'%(homedir))
-	
+	out_path='/%s/brains/clubs_mask'%(homedir)
+	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
+
 	names = ['diverse','rich']
-	for idx,club in enumerate([adult_pc_club,adult_degree_club]):
+	for idx,club in enumerate([hcp.diverse_club,hcp.rich_club]):
 		colors = np.zeros((400,4))
 		for i in range(len(club)):
 			if idx == 0:
-				if club[i]: 
-					colors[i] = dd_color
+				if club[i]:
+					colors[i] = d_color
 			if idx == 1:
-				if club[i]: 
-					colors[i] = rr_color
-		write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/%s_club_mask'%(homedir,names[idx]))
+				if club[i]:
+					colors[i] = r_color
+		out_path='/%s/brains/%s_clubs_mask'%(homedir,names[idx])
+		pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
-
-	ages = sub_df['masteref.Age'].values
-	motion = sub_df['masteref.Motion'].values
-	pc = np.load('/%s/data/pc.npy'%(homedir))
-	pc = remove(motion.reshape(-1,1),pc.mean(axis=1))
-
-	strength = np.load('/%s/data/strength.npy'%(homedir))
-	strength = remove(motion.reshape(-1,1),strength.mean(axis=1))
-
+def age_by_club_brains():
 	"""
+	The most obvious figure, make a rich and diverse club for each age bracket
 	simple regression way, predict value at each age, save a few ages
 	"""
+
+	pnc = load_pnc()
+	hcp = load_hcp_metrics()
+	pc = remove_motion_sex(pnc,pnc.network.pc.mean(axis=1))
+	strength = remove_motion_sex(pnc,pnc.network.strength.mean(axis=1))
+	ages = pnc.measures['ageAtScan1'].values
 
 	clf = make_pipeline(StandardScaler(), SVR(kernel='poly',degree=3))
 	predicted_ages = np.linspace(np.min(ages),np.max(ages),len(range(np.min(ages),np.max(ages)))+1).reshape(-1,1)
 	predicted_pc = np.zeros((400,len(predicted_ages)))
 
 	for i in range(400):
-		X,y = ages.reshape(-1,1),pc[:,i].reshape(-1,1)
+
+		X,y = ages.reshape(-1,1),pc[:,i].flatten()
 		clf.fit(X, y)
 		predicted_pc[i] = clf.predict(predicted_ages).flatten()
 
@@ -282,7 +170,7 @@ def age_by_club_brains():
 	predicted_strength = np.zeros((400,len(predicted_ages)))
 
 	for i in range(400):
-		X,y = ages.reshape(-1,1),strength[:,i].reshape(-1,1)
+		X,y = ages.reshape(-1,1),strength[:,i].flatten()
 		clf.fit(X, y)
 		predicted_strength[i] = clf.predict(predicted_ages.reshape(-1,1)).flatten()
 
@@ -293,117 +181,94 @@ def age_by_club_brains():
 		idx_mask = (int_ages>=i_age) & (int_ages<=j_age)
 
 		d_club = np.nanmean(predicted_pc[:,idx_mask],axis=1)
-		print (pearsonr(adult_pc,d_club))
+		print (pearsonr(hcp.pc,d_club))
 		r_club = np.nanmean(predicted_strength[:,idx_mask],axis=1)
-		print (pearsonr(adult_degree,r_club))
-		
-		d_club = d_club > np.percentile(d_club,80)
-		r_club = r_club > np.percentile(r_club,80)
+		print (pearsonr(hcp.strength,r_club))
 
+		d_club = d_club > np.percentile(d_club,rank_threshold)
+		r_club = r_club > np.percentile(r_club,rank_threshold)
 
-		# colors = np.zeros((400,4))
-		# for i in range(len(r_club)):
-		# 	if d_club[i] and r_club[i]:
-		# 		colors[i] = [1,1,1,1]
-		# 		continue
-		# 	if d_club[i]:
-		# 		colors[i] = d_color
-		# 	if r_club[i]:
-		# 		colors[i] = r_color		
-		# write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/clubs_age_%s_%s'%(homedir,i_age,j_age))
+		colors = np.zeros((400,4))
+		for i in range(len(r_club)):
+			if d_club[i]: colors[i] = d_color
+
+		out_path='/%s/brains/diverse_clubs_age_%s_%s'%(homedir,i_age,j_age)
+		pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
 
 		colors = np.zeros((400,4))
 		for i in range(len(r_club)):
-			if d_club[i]: colors[i] = dd_color
-		write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/diverse_clubs_age_%s_%s'%(homedir,i_age,j_age))
+			if r_club[i]: colors[i] = r_color
+		out_path='/%s/brains/rich_clubs_age_%s_%s'%(homedir,i_age,j_age)
+		pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
-		colors = np.zeros((400,4))
-		for i in range(len(r_club)):
-			if r_club[i]: colors[i] = rr_color
-		write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/rich_clubs_age_%s_%s'%(homedir,i_age,j_age))
+def clubness(hcp,other):
+	rich_clubness = other.matrix[np.ix_(np.arange(other.matrix.shape[0]),hcp.rich_club,hcp.rich_club)].sum(axis=-1).sum(axis=-1)
+	diverse_clubness = other.matrix[np.ix_(np.arange(other.matrix.shape[0]),hcp.diverse_club,hcp.diverse_club)].sum(axis=-1).sum(axis=-1)
+	return rich_clubness,diverse_clubness
 
 def basic_figure():
-	q = np.load('/%s/data/q.npy'%(homedir))
-	pc = np.load('/%s/data/pc.npy'%(homedir))
-	rich_clubness = np.load('/%s/data/rich.npy'%(homedir))
-	diverse_clubness = np.load('/%s/data/diverse.npy'%(homedir))
-	
-	rich_other = np.load('/%s/data/rich_other.npy'%(homedir))
-	diverse_other = np.load('/%s/data/diverse_other.npy'%(homedir))
-	ages = sub_df['masteref.Age'].values
-	motion = sub_df['masteref.Motion'].values
-	ef = sub_df['masteref.F1_Exec_Comp_Cog_Accuracy'].values
-	age_r_ef = remove(ages.reshape(-1,1),ef)
-	
-	rich_clubness = remove(motion.reshape(-1,1),rich_clubness)
-	diverse_clubness = remove(motion.reshape(-1,1),diverse_clubness)
-	rich_other = remove(motion.reshape(-1,1),rich_other)
-	diverse_other = remove(motion.reshape(-1,1),diverse_other)
-	pc = remove(motion.reshape(-1,1),pc.mean(axis=1))
-	age_pc = remove(ages.reshape(-1,1),pc)
+	pnc = load_pnc()
+	hcp = load_hcp_metrics()
+	ages = pnc.measures['ageAtScan1'].values
+	motion = pnc.measures['restRelMeanRMSMotion'].values
+	rich_clubness,diverse_clubness = clubness(hcp,pnc)
+	rich_clubness = remove_motion_sex(pnc,rich_clubness)
+	diverse_clubness = remove_motion_sex(pnc,diverse_clubness)
 
-	# ### test if clubness by age is because template networks fit better
-	# diverse_clubness_q = remove(q.mean(axis=1).reshape(-1,1),diverse_clubness)
-	# print (pearsonr(ages,diverse_clubness_q.mean(axis=1)))
-
+	# %matplotlib inline
 	plt.close()
 	f, (ax1, ax2) = plt.subplots(1,2, sharex=True,sharey=True)
-	f.set_figwidth((full_width/3)*2)
+	f.set_figwidth(8/3.*2)
 	f.set_figheight(3)
-	sns.regplot(ages/12,diverse_clubness.mean(axis=-1),ax=ax1,color=d_color,scatter_kws={'edgecolors':dd_color})  
-	r = np.around(pearsonr(ages,diverse_clubness.mean(axis=-1))[0],2)   
+	sns.regplot(ages/12,diverse_clubness,ax=ax1,color=d_color,scatter_kws={'edgecolors':d_color,'alpha':.25})
+	r = np.around(pearsonr(ages,diverse_clubness)[0],2)
 	plt.sca(ax1)
 	plt.ylabel('clubness')
 	plt.xlabel('age')
 	plt.text(0.1,.9,'r=%s'%(r),transform=ax1.transAxes)
 	plt.sca(ax2)
-	sns.regplot(ages/12,rich_clubness.mean(axis=-1),ax=ax2,color=r_color,scatter_kws={'edgecolors':rr_color})    
-	r = np.around(pearsonr(ages,rich_clubness.mean(axis=-1))[0],2)   
+	sns.regplot(ages/12,rich_clubness,ax=ax2,color=r_color,scatter_kws={'edgecolors':r_color,'alpha':.25})
+	r = np.around(pearsonr(ages,rich_clubness)[0],2)
 	plt.text(0.1,.9,'r=%s'%(r),transform=ax2.transAxes)
 	plt.xlabel('age')
 	plt.tight_layout()
 	sns.despine()
-	# plt.show()
-	plt.savefig('clubness.pdf')  
-	
-def interactions():
+	plt.savefig('/%s/figures/clubness.pdf'%(homedir))
+	plt.show()
 
-	q = np.load('/%s/data/q.npy'%(homedir))
-	pc = np.load('/%s/data/pc.npy'%(homedir))
-	rich_clubness = np.load('/%s/data/rich.npy'%(homedir))
-	diverse_clubness = np.load('/%s/data/diverse.npy'%(homedir))
-	ages = sub_df['masteref.Age'].values
-	motion = sub_df['masteref.Motion'].values
-	ef = sub_df['masteref.F1_Exec_Comp_Cog_Accuracy'].values
-	age_r_ef = remove(ages.reshape(-1,1),ef)
-	
-	rich_clubness = remove(motion.reshape(-1,1),rich_clubness)
-	diverse_clubness = remove(motion.reshape(-1,1),diverse_clubness)
-	pc = remove(motion.reshape(-1,1),pc.mean(axis=1))
-	age_pc = remove(ages.reshape(-1,1),pc)
+def pc_clubness_interactions():
+
+	pnc = load_pnc()
+	hcp = load_hcp_metrics()
+	ages = pnc.measures['ageAtScan1'].values
+	motion = pnc.measures['restRelMeanRMSMotion'].values
+	rich_clubness,diverse_clubness = clubness(hcp,pnc)
+	rich_clubness = remove_motion_sex(pnc,rich_clubness)
+	diverse_clubness = remove_motion_sex(pnc,diverse_clubness)
+	pc = remove_motion_sex(pnc,pnc.network.pc.mean(axis=1))
+	strength = remove_motion_sex(pnc,pnc.network.strength.mean(axis=1))
+	q = remove_motion_sex(pnc,pnc.network.modularity.mean(axis=1))
 
 	df = pd.DataFrame()
-	for idx,s in enumerate(sub_df['masteref.bblid'].values):
-		tdf = pd.DataFrame(columns=['sub','node','clubness','pc','age','ef_adj_adj','q'])
+	for idx,s in enumerate(pnc.measures.subject.values):
+		tdf = pd.DataFrame(columns=['sub','node','clubness','pc','age','q'])
 		tdf['node'] = np.arange(400)
 		tdf['sub'] = str(s)
 		tdf['pc'] = pc[idx]
-		tdf['q'] = q[idx].mean(axis=0)
-		tdf['clubness'] = diverse_clubness[idx].mean(axis=0)
+		tdf['q'] = q[idx]
+		tdf['clubness'] = diverse_clubness[idx]
 		tdf['age'] = ages[idx]
-		tdf['ef_adj_adj'] = age_r_ef[idx]
 		df = df.append(tdf,ignore_index=True)
 
 
 	club_pc_coefs = np.zeros((400))
 	club_pc_q_coefs = np.zeros((400))
-	ef_pc_coefs = np.zeros((400))
 	for node in range(400):
 		node_df = df[df['node'] == node]
 		node_df = node_df.drop('node',axis=1)
 		node_df = node_df.drop('sub',axis=1)
-		
+
 		#pc by age interaction, does clubness increase as pc and age increase together?
 		model = sm.OLS.from_formula(formula='clubness ~ age + pc + age:pc', data=node_df).fit()
 		result_df = pd.read_html(model.summary().tables[1].as_html(),header=0,index_col=0)[0]
@@ -414,474 +279,194 @@ def interactions():
 		result_df = pd.read_html(model.summary().tables[1].as_html(),header=0,index_col=0)[0]
 		club_pc_q_coefs[node] = result_df['coef'][-1]
 
-		#coefficients of PC for each node: does an increase in PC, holding clubness constant, increase EF?
-		model = sm.OLS.from_formula(formula='ef_adj_adj ~ clubness + pc', data=node_df).fit()
-		result_df = pd.read_html(model.summary().tables[1].as_html(),header=0,index_col=0)[0]
-		ef_pc_coefs[node] = result_df['coef'][-1]
-
-	
-
-	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(club_pc_coefs,1),sns.diverging_palette(220, 10,n=1001)))
-	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/pc:age-pc-coefs_clubness~age+pc+pc-age'%(homedir))
-
-	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(adult_pc,1),sns.diverging_palette(220, 10,n=1001)))
-	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/adult_pc'%(homedir))
-
 	age_pc_corr = np.zeros((400)) #regions get stronger pc with age
-	ef_pc_corr = np.zeros((400)) #regions explain non-age-related ef
+	club_pc_corr = np.zeros((400)) #regions get stronger pc with clubness
 
 	for i in range(400):
 		age_pc_corr[i] = pearsonr(ages,pc[:,i])[0]
-		ef_pc_corr[i] = pearsonr(age_r_ef,pc[:,i])[0]
+		club_pc_corr[i] = pearsonr(diverse_clubness,pc[:,i])[0]
 
-	print (pearsonr(club_pc_coefs,adult_pc))
-	print (pearsonr(ef_pc_corr,adult_pc))
-	print (pearsonr(club_pc_coefs,ef_pc_corr))
+	print (pearsonr(club_pc_coefs,hcp.pc))
+	print (pearsonr(club_pc_corr,hcp.pc))
 
-
-	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(ef_pc_corr,1),sns.diverging_palette(220, 10,n=1001)))
-	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/ef_pc_corr'%(homedir))
+	spincorrs = pennlinckit.brain.spin_test(hcp.pc,club_pc_coefs,n=1000)
+	spin_stat = pennlinckit.brain.spin_stat(hcp.pc,club_pc_coefs,spincorrs)
 
 
-	sns.regplot(club_pc_corr,adult_pc)
-	plt.ylabel('adult participation coef')
-	plt.xlabel('pearson r(nodal pc,diverse clubness)')
-	r = np.around(pearsonr(club_pc_corr,adult_pc)[0],2)   
-	plt.text(0.1,.9,'r=%s'%(r),transform=plt.gca().transAxes)
-	plt.savefig('club_pc_corr.pdf')  
-
-	sns.regplot(age_pc_corr,adult_pc)
-	plt.ylabel('adult participation coef')
-	plt.xlabel('pearson r(nodal pc,age)')
-	r = np.around(pearsonr(age_pc_corr,adult_pc)[0],2)   
-	plt.text(0.1,.9,'r=%s'%(r),transform=plt.gca().transAxes)
-	plt.savefig('age_pc_corr.pdf')  
-
+	# %matplotlib inline
 	plt.close()
-	sns.regplot(ef_pc_corr,adult_pc)
-	plt.ylabel('adult participation coef')
-	plt.xlabel('pearson r(nodal pc,ef)')
-	r = np.around(pearsonr(ef_pc_corr,adult_pc)[0],3)   
-	plt.text(0.1,.9,'r=%s'%(r),transform=plt.gca().transAxes)
-	plt.savefig('ef_pc_corr.pdf')  
-
-def save_full_correlations():
-	matrix = []
-	for subject in sub_df['masteref.bblid']:
-		matrix.append(np.loadtxt('%s/%s_Schaefer400_network.txt'%(matrix_path,subject)))
-	matrix = np.array(matrix)
-
-	pc_corr_matrix = np.zeros((400,400,400))
-	pc_corr_matrix[:] = np.nan
-	s_corr_matrix = np.zeros((400,400,400))
-	s_corr_matrix[:] = np.nan
-
-	motion = sub_df['masteref.Motion'].values
-
-	pc = np.load('/%s/data/pc.npy'%(homedir))
-	pc = remove(motion.reshape(-1,1),pc.mean(axis=1))
-
-	strength = np.load('/%s/data/strength.npy'%(homedir))
-	strength = remove(motion.reshape(-1,1),strength.mean(axis=1))
-
-	for i in range(400):
-		pc_corr_matrix[i] = vcorrcoef(matrix.reshape(693,-1).swapaxes(0,1),pc[:,i]).reshape(400,400)
-		s_corr_matrix[i] = vcorrcoef(matrix.reshape(693,-1).swapaxes(0,1),strength[:,i]).reshape(400,400)
-	np.save('/%s/data/pc_edge_corr'%(homedir),pc_corr_matrix)
-	np.save('/%s/data/strength_edge_corr'%(homedir),s_corr_matrix)
-
-def analyze_full_correlations():
-	pc_corr_matrix = ('/%s/data/pc_edge_corr'%(homedir))
-	strength_corr_matrix =('/%s/data/strength_edge_corr'%(homedir))
-
-global model_matrix
-global model_kf 
-global model_subjects
-global model_age_r_ef
-global model_neurons_array
-def multi_performance(node):
-	print (node)
-	edges = model_matrix[:,node]
-	prediction_array = np.zeros((model_matrix.shape[0]))
-	for train, test in model_kf.split(model_subjects):
-		# model = MLPRegressor(solver='lbfgs',hidden_layer_sizes=model_neurons_array,max_iter=10000)
-		model = RidgeCV(alphas=[1e-3, 1e-2, 1e-1,0.2,.25,0.30,0.35,.45,0.50,0.60,0.70,0.80,.90,1])
-		model.fit(edges[train],model_age_r_ef[train])
-		prediction_array[test] = model.predict(edges[test])
-	return prediction_array
-
-def performance():
-	global model_matrix
-	global model_kf 
-	global model_subjects
-	global model_age_r_ef
-	global model_neurons_array
-	ages = sub_df['masteref.Age'].values
-	ef = sub_df['masteref.F1_Exec_Comp_Cog_Accuracy'].values
-	model_age_r_ef = remove(ages.reshape(-1,1),ef)
-	model_subjects =  sub_df['masteref.bblid'].values
-
-	rich_matrix = np.zeros((sub_df.shape[0],80,80))
-	diverse_matrix = np.zeros((sub_df.shape[0],80,80))
-	full_matrix = np.zeros((sub_df.shape[0],400,400))
-	for sidx,subject in enumerate(sub_df['masteref.bblid']):
-		m = np.loadtxt('%s/%s_Schaefer400_network.txt'%(matrix_path,subject))
-		full_matrix[sidx] = m
-		diverse_matrix[sidx] = m[np.ix_(adult_pc_club,adult_pc_club)]
-		rich_matrix[sidx] = m[np.ix_(adult_degree_club,adult_degree_club)]
-
-
-	model_neurons_array = make_dnn_structure(80,10)
-	model_kf = KFold(5,shuffle=True,random_state=315)
-	model_subjects = sub_df['masteref.bblid'].values   
-	for club,model_matrix in zip(['full','rich','diverse'],[full_matrix,rich_matrix,diverse_matrix]):
-		print (club)
-		pool = Pool(40)
-		full_prediction = pool.map(multi_performance,range(model_matrix.shape[-1]))
-		np.save('/%s/data/%s_predictions.npy'%(homedir,club),full_prediction)
-		1/0
-
-def analyze_performance():
-	rich_prediction = np.load('/%s/data/rich_predictions.npy'%(homedir))
-	diverse_prediction = np.load('/%s/data/diverse_predictions.npy'%(homedir))
-	full_prediction = np.load('/%s/data/full_predictions.npy'%(homedir))
-
-	# club_prediction = np.mean([rich_prediction.mean(axis=0),rich_prediction.mean(axis=0)],axis=0)
-	ages = sub_df['masteref.Age'].values
-	ef = sub_df['masteref.F1_Exec_Comp_Cog_Accuracy'].values
-	age_r_ef = remove(ages.reshape(-1,1),ef)
-	boot_iters = 10000
-	rich_acc = np.zeros((boot_iters))
-	diverse_acc = np.zeros((boot_iters))
-	sample_size = 80
-	for booty in range(boot_iters):
-		sample = np.random.randint(0,sample_size,sample_size)
-		dx,rx = np.mean(diverse_prediction[sample],axis=0),np.mean(rich_prediction[sample],axis=0)
-		diverse_acc[booty],rich_acc[booty] = pearsonr(dx,age_r_ef)[0],pearsonr(rx,age_r_ef)[0]
-	p = len(diverse_acc[diverse_acc<np.mean(rich_acc)])/boot_iters
-	print (p)
-
-	plt.close()
-	f, (ax1, ax2) = plt.subplots(1,2, sharex=True,sharey=True)
-	f.set_figwidth((full_width/3)*2)
-	f.set_figheight(2.5)
-	sns.regplot(np.mean(diverse_prediction,axis=0),age_r_ef,ax=ax1,color=d_color,scatter_kws={'edgecolors':dd_color})  
-	r = np.around(pearsonr(np.mean(diverse_prediction,axis=0),age_r_ef)[0],3)   
-	ax1.xaxis.set_major_locator(plt.MaxNLocator(5))
-	ax1.yaxis.set_major_locator(plt.MaxNLocator(5))
-	plt.sca(ax1)
-	plt.ylabel('executive function')
-	plt.xlabel('predicted executive function')
-	plt.text(0.65,.1,'r=%s'%(r),transform=ax1.transAxes)
-	plt.sca(ax2)
-	sns.regplot(np.mean(rich_prediction,axis=0),age_r_ef,ax=ax2,color=r_color,scatter_kws={'edgecolors':rr_color})  
-	r = np.around(pearsonr(np.mean(rich_prediction,axis=0),age_r_ef)[0],3)   
-	plt.text(0.65,.1,'r=%s'%(r),transform=ax2.transAxes)
-	plt.xlabel('predicted executive function')
-	
-	ax2.xaxis.set_major_locator(plt.MaxNLocator(5))
-	ax2.yaxis.set_major_locator(plt.MaxNLocator(5))
+	f,axes = plt.subplots(1,2,figsize=(5.5,3))
+	sns.regplot(x=club_pc_coefs,y=hcp.pc,ax=axes[0],truncate=False,x_jitter=.2,scatter_kws={"s": 50,'alpha':0.35})
+	plt.sca(axes[0])
+	r,p = pearsonr(hcp.pc,club_pc_coefs)
+	plt.text(.25,.035,'r={0},p={1}'.format(np.around(r,2),np.around(p,4)))
+	plt.ylabel('participation coef')
+	plt.xlabel('clubness~age:pc interaction')
+	sns.histplot(spincorrs,ax=axes[1])
+	plt.sca(axes[1])
+	plt.vlines(r,0,100,colors='black')
 	plt.tight_layout()
 	sns.despine()
-	plt.savefig('/%s/figures/predictions.pdf'%(homedir))  
+	plt.savefig('/{0}/figures/pc_age_interaction.pdf'.format(homedir))
+	plt.show()
 
 
 
+	colors = np.array(pennlinckit.utils.make_heatmap(pennlinckit.utils.cut_data(club_pc_coefs,1),sns.diverging_palette(220, 10,n=1001)))
+	out_path='/%s/brains/clubness~age+pc+age:pc'%(homedir)
+	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
-# qsub -l h_vmem=40G,s_vmem=40G -pe threaded 21 -N clubs -V -j y -b y -o /cbica/home/bertolem/sge/ -e /cbica/home/bertolem/sge/ //cbica/home/bertolem/diverse_development/diverse_development.py
+	colors = np.array(pennlinckit.utils.make_heatmap(pennlinckit.utils.cut_data(hcp.pc,1),sns.diverging_palette(220, 10,n=1001)))
+	out_path='/%s/brains/hcp_pc'%(homedir)
+	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
-# qsub -l h_vmem=20G,s_vmem=20G -N clubs -V -j y -b y -o /cbica/home/bertolem/sge/ -e /cbica/home/bertolem/sge/ //cbica/home/bertolem/diverse_development/diverse_development.py
+def region_predict(data,region,factor,**model_args):
+	data.targets = data.measures[factor].values
+	data.features = data.matrix[:,region]
+	model_args['self'] = data
+	pennlinckit.utils.predict(**model_args)
 
-# hcp_metrics()
-# run_metrics()
-# performance()
-# save_full_correlations()
+def predict(factor):
+	data = load_pnc()
+	prediction = np.zeros((400,len(data.measures.subject)))
+	for node in range(400):
+		region_predict(data,node,factor,**{'model':'deep','cv':'KFold','folds':5,'neurons':400,'layers':10,'remove_linear_vars':['restRelMeanRMSMotion','sex']})
+		# region_predict(data,node,factor,**{'model':'ridge','cv':'KFold','folds':5,'remove_linear_vars':['restRelMeanRMSMotion','sex']})
+		prediction[node] = data.prediction
+	prediction_acc = np.zeros(400)
+	for node in range(data.matrix.shape[-1]):
+		prediction_acc[node] = pearsonr(prediction[node],data.corrected_targets)[0]
+	np.save('{0}/data/deep/prediction_{1}.npy'.format(homedir,factor),prediction)
+	np.save('{0}/data/deep/prediction_acc_{1}.npy'.format(homedir,factor),prediction_acc)
+	np.save('{0}/data/deep/prediction_regressed_targets_{1}.npy'.format(homedir,factor),data.corrected_targets)
+
+def submit_predict():
+	"""
+	The above function makes the predictions for each factor
+	this submit it
+	"""
+	factors = ['mood_4factorv2','psychosis_4factorv2', 'externalizing_4factorv2', 'phobias_4factorv2','overall_psychopathology_4factorv2'] #clincal factors
+	for f in factors:
+		script_path = '/cbica/home/bertolem/diverse_development/diverse_development.py predict {0}'.format(f) #it me
+		pennlinckit.utils.submit_job(script_path,f,RAM=10,threads=1)
+	factors = ['F1_Exec_Comp_Res_Accuracy_RESIDUALIZED','F2_Social_Cog_Accuracy_RESIDUALIZED','F3_Memory_Accuracy_RESIDUALIZED'] #cogi factors
+	for f in factors:
+		script_path = '/cbica/home/bertolem/diverse_development/diverse_development.py predict {0}'.format(f) #it me
+		pennlinckit.utils.submit_job(script_path,f,RAM=10,threads=1)
+
+def flexibility(factors='clinical'):
+	data = load_pnc()
+	hcp = load_hcp_metrics()
+	binary = False
+	# factorset = 'clinical'
+	factorset = 'cognitive'
+	if factorset == 'cognitive':
+		factors = ['F1_Exec_Comp_Res_Accuracy_RESIDUALIZED','F2_Social_Cog_Accuracy_RESIDUALIZED','F3_Memory_Accuracy_RESIDUALIZED'] #cogi factors
+	if factorset == 'clinical':
+		factors = ['mood_4factorv2','psychosis_4factorv2', 'externalizing_4factorv2', 'phobias_4factorv2','overall_psychopathology_4factorv2'] #clincal factors
+	all_factor_predictions = np.zeros((len(factors),data.matrix.shape[-1],data.matrix.shape[0]))
+	prediction_acc = np.zeros((len(factors),data.matrix.shape[-1]))
+	for fidx, factor in enumerate(factors):
+		prediction_acc[fidx] = np.load('/{0}/data/linear/prediction_acc_{1}.npy'.format(homedir,factor))
+		all_factor_predictions[fidx] = np.load('/{0}/data/linear/prediction_{1}.npy'.format(homedir,factor))
+
+	min = prediction_acc.mean()
+	max = prediction_acc.mean() + prediction_acc.std() *2
+
+	if binary == True:
+		flexible_nodes = np.zeros((400))
+		high_predict = prediction_acc.mean() + prediction_acc.std()
+		flexible_nodes =flexible_nodes+ (prediction_acc>high_predict).sum(axis=0)
+	if binary == False:
+		flexible_nodes = np.zeros((400))
+		for high_predict in np.linspace(min,max,8):
+			flexible_nodes = flexible_nodes + (prediction_acc>high_predict).sum(axis=0)
+
+	from pennlinckit import plotting
+	spincorrs = pennlinckit.brain.spin_test(hcp.pc,flexible_nodes,n=1000)
+	spin_stat = pennlinckit.brain.spin_stat(hcp.pc,flexible_nodes,spincorrs)
+
+	# %matplotlib inline
+	plt.close()
+	f,axes = plt.subplots(1,2,figsize=(5.5,3))
+	sns.regplot(x=flexible_nodes,y=hcp.pc,ax=axes[0],truncate=False,x_jitter=.2,scatter_kws={"s": 50,'alpha':0.45})
+	plt.sca(axes[0])
+	r,l,h,p = pennlinckit.utils.bootstrap_corr(flexible_nodes,hcp.pc,pearsonr,10000)
+	plt.text(1,.01,'r={0},p={1}\n95%CI:{2},{3}'.format(np.around(r,2),np.around(p,4),np.around(l,2),np.around(h,2)),transform=axes[0].transAxes,horizontalalignment='right',verticalalignment='bottom')
+	plt.ylabel('participation coef')
+	plt.xlabel('predict flex index')
+	sns.histplot(spincorrs,ax=axes[1])
+	plt.sca(axes[1])
+	plt.vlines(r,0,100,colors='black')
+	plt.text(r-.01,100,'p={0}'.format(np.around(spin_stat,4)),horizontalalignment='right',verticalalignment='top',rotation=90)
+	plt.tight_layout()
+	sns.despine()
+	plt.savefig('/{0}/figures/flex_{1}_{2}.pdf'.format(homedir,factorset,binary))
+	plt.show()
+
+	if binary == False:
+		colors = np.array(pennlinckit.utils.make_heatmap(pennlinckit.utils.cut_data(flexible_nodes,1.5),sns.diverging_palette(220, 10,n=1001)))
+		out_path='/{0}/brains/flexible_nodes_{1}'.format(homedir,factorset)
+		pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if len(sys.argv) > 1:
+	if sys.argv[1] == 'make_data': make_data(sys.argv[2])
+	if sys.argv[1] == 'predict': predict(sys.argv[2])
 
 
 """
-GRAVEYARD OF CODE BEWARE 
+order to run this!
+
+submit_make_data()
+
+hcp_club_brains()
+
+age_by_club_brains()
+
+basic_figure()
+
 """
-# sns.lineplot(x="age", y="clubness",hue="club",data=plot_df[(plot_df.club=='rich club') | (plot_df.club=='diverse club')]),palette=[sns.color_palette("Paired")[2],sns.color_palette("Paired")[1]])
 
 
 
 
 
-
-
-
-	# mean_e = e.mean(axis=1).mean(axis=-1) 
-
-
-	# non_diverse_mask = np.ones((400,400))
-	# non_diverse_mask[np.ix_(adult_pc>np.percentile(adult_pc,20),adult_pc>np.percentile(adult_pc,20))] = 0
-
-	# diverse_corr_community = np.zeros((np.unique(membership_ints).shape[0],np.unique(membership_ints).shape[0]))
-	
-	# for com in np.unique(membership_ints):
-	# 	community_mask = np.zeros((400,400))
-	# 	community_mask[np.ix_(np.where(membership_ints==com)[0],np.where(membership_ints==com)[0])] = 1
-	# 	try:diverse_corr_community[com,com] = pearsonr(diverse_clubness.mean(axis=-1),matrix[:,community_mask.astype(bool) & non_diverse_mask.astype(bool)].mean(axis=-1))[0]
-	# 	except: diverse_corr_community[com,com] = np.nan
-	# for com1,com2 in itertools.combinations(np.unique(membership_ints),2):
-	# 	community_mask = np.zeros((400,400))
-	# 	community_mask[np.ix_(np.where(membership_ints==com1)[0],np.where(membership_ints==com2)[0])] = 1
-		
-	# 	try: r = pearsonr(diverse_clubness.mean(axis=-1),matrix[:,community_mask.astype(bool) & non_diverse_mask.astype(bool)].mean(axis=-1))[0]
-	# 	except: r = np.nan
-	# 	diverse_corr_community[com1,com2] = r 
-	# 	diverse_corr_community[com2,com1] = r 
-
-	# plt.close()
-	# sns.heatmap(diverse_corr_community,annot=True,fmt=".2f",vmin=-.1,vmax=.1,cmap=sns.diverging_palette(220, 10,n=1001))
-	# plt.yticks(range(16),names,rotation=360)
-	# plt.xticks(range(16),names,rotation=90)
-	# plt.tight_layout()
-
-
-
-	# e_community = np.zeros((len(ages),np.unique(membership_ints).shape[0],np.unique(membership_ints).shape[0]))
-	# e_age_community = np.zeros((np.unique(membership_ints).shape[0],np.unique(membership_ints).shape[0]))
-	# e_mean = e.mean(axis=1)
-	# for com in np.unique(membership_ints):
-	# 	e_community[:,com,com] = e_mean[:,np.where(membership_ints==com)[0]][:,:,np.where(membership_ints==com)[0]].mean(axis=-1).mean(axis=-1)
-	# 	r = pearsonr(ages,e_community[:,com,com])[0]
-	# 	e_age_community[com,com] = r
-	# 	e_age_community[com,com] = r
-	# for com1,com2 in itertools.combinations(np.unique(membership_ints),2):
-	# 	e_community[:,com1,com2] = e_mean[:,np.where(membership_ints==com1)[0]][:,:,np.where(membership_ints==com2)[0]].mean(axis=-1).mean(axis=-1)
-	# 	r = pearsonr(ages,e_community[:,com1,com2])[0]
-	# 	e_age_community[com1,com2] = r
-	# 	e_age_community[com2,com1] = r
-
-	# plt.close()
-	# sns.heatmap(e_age_community,annot=True,fmt=".2f",vmin=-.1,vmax=.1,cmap=sns.diverging_palette(220, 10,n=1001))
-	# plt.yticks(range(16),names,rotation=360)
-	# plt.xticks(range(16),names,rotation=90)
-	# plt.tight_layout()
-
-
-
-
-
-	# eff_age_r = np.zeros(400)
-	# for n in range(400):
-	# 	eff_age_r[n] = pearsonr(mean_e[:,n],ages)[0]
-
-
-	# sns.regplot(y=e.mean(axis=1)[:,membership_ints<8][:,:,membership_ints<8].mean(axis=-1).mean(axis=-1),x=diverse_clubness.mean(axis=-1),order=3)      
-	# plt.xlabel('diverse strength')
-	# plt.ylabel('closeness')
-	# plt.savefig('diverse_close_non_fp_df.pdf')
-
-	# plt.close()
-	# sns.regplot(y=e.mean(axis=1)[:,membership_ints>=8][:,:,membership_ints>=8].mean(axis=-1).mean(axis=-1),x=diverse_clubness.mean(axis=-1),order=3)          
-	# plt.xlabel('diverse strength')
-	# plt.ylabel('closeness')
-	# plt.savefig('diverse_close_fp_df.pdf')
-
-
-
-	# matrix = remove_motion(motion.reshape(-1,1),matrix.reshape(matrix.shape[0],-1)).reshape(len(ages),400,400)
-
-	# plt.close()
-	# sns.regplot(y=matrix[:,membership_ints<8][:,:,membership_ints<8].mean(axis=-1).mean(axis=-1),x=diverse_clubness.mean(axis=-1),order=3)      
-	# plt.xlabel('diverse strength')
-	# plt.ylabel('fc strength')
-	# plt.savefig('diverse_fc_non_fp_df.pdf')
-
-	# plt.close()
-	# sns.regplot(y=matrix[:,membership_ints>=8][:,:,membership_ints>=8].mean(axis=-1).mean(axis=-1),x=diverse_clubness.mean(axis=-1),order=3)          
-	# plt.xlabel('diverse strength')
-	# plt.ylabel('fc strength')
-	# plt.savefig('diverse_fc_fp_df.pdf')
-
-
-	# age_r_diverse_clubness = remove_motion(ages.reshape(-1,1),diverse_clubness)
-
-	# pearsonr(y=matrix[:,membership_ints<5][:,:,membership_ints<5].mean(axis=-1).mean(axis=-1),x=diverse_clubness.mean(axis=-1))
-	# pearsonr(y=matrix[:,membership_ints<8][:,:,membership_ints<8].mean(axis=-1).mean(axis=-1),x=ages)
-	# pearsonr(y=matrix[:,membership_ints>=8][:,:,membership_ints>=8].mean(axis=-1).mean(axis=-1),x=diverse_clubness.mean(axis=-1))
-
-
-
-	# colors = np.array(write_brains.make_heatmap(write_brains.cut_data(eff_age_r,1),sns.diverging_palette(220, 10,n=1001)))
-	# write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/e_age_pc_corr'%(homedir))
-
-
-	# df_cols = ['age','iteration','club','clubness']
-	# plot_df = pd.DataFrame(columns=df_cols)
-	# for i in range(1000):
-
-	# 	subs = random.choices(range(0,q.shape[0]),k=q.shape[0])
-	# 	q_low = lowess(q[subs].mean(axis=1),ages[subs],is_sorted=False,return_sorted=False)
-	# 	d_low = lowess(diverse_clubness[subs].mean(axis=1),ages[subs],is_sorted=False,return_sorted=False)
-	# 	r_low = lowess(rich_clubness[subs].mean(axis=1),ages[subs],is_sorted=False,return_sorted=False)
-	# 	ages = ages[subs]
-
-	# 	this_df =pd.DataFrame(columns=df_cols)
-	# 	this_df['age'] = ages[subs]
-	# 	this_df['clubness'] = q_low 
-	# 	this_df['club'] = 'modularity'
-	# 	this_df['iteration'] = i
-	# 	plot_df = plot_df.append(this_df,ignore_index=True)
-
-	# 	# this_df =pd.DataFrame(columns=df_cols)
-	# 	# this_df['age'] = ages[subs]
-	# 	# this_df['clubness'] = e[:,i].mean(axis=-1).mean(axis=-1)
-	# 	# this_df['club'] = 'efficiency'
-	# 	# this_df['iteration'] = i
-	# 	# plot_df = plot_df.append(this_df,ignore_index=True)
-
-	# 	this_df =pd.DataFrame(columns=df_cols)
-	# 	this_df['age'] = ages[subs]
-	# 	this_df['clubness'] = r_low
-	# 	this_df['club'] = 'rich club'
-	# 	this_df['iteration'] = i
-	# 	plot_df = plot_df.append(this_df,ignore_index=True)
-
-	# 	this_df =pd.DataFrame(columns=df_cols)
-	# 	this_df['age'] = ages[subs]
-	# 	this_df['clubness'] = d_low
-	# 	this_df['club'] = 'diverse_club'
-	# 	this_df['iteration'] = i
-	# 	plot_df = plot_df.append(this_df,ignore_index=True)
-
-
-
-
-
-
-	# sns.set(style='white',font='Palatino')
-	# fig, ax1 = plt.subplots()
-	# sns.lineplot(x=np.array(age_perm).mean(axis=0), y=np.array(q_perm).mean(axis=0),ax=ax1)
-	# smooth_Q = lowess(q.mean(axis=1),ages,is_sorted=False)  
-	# sns.lineplot(smooth_Q[:,0],smooth_Q[:,1],color='grey',ax=ax1)
-	# plt.ylabel('modularity (Q)')
-
-	# ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
-	# sns.lineplot(x="age", y="clubness",hue="club",data=plot_df[(plot_df.club=='rich club') | (plot_df.club=='diverse club')],ax=ax2,palette=[sns.color_palette("Paired")[2],sns.color_palette("Paired")[1]])
-	# smooth_diverse = lowess(diverse_clubness.mean(axis=1),ages,is_sorted=False)
-	# sns.lineplot(smooth_diverse[:,0],smooth_diverse[:,1],color=sns.color_palette("Paired")[1])
-	# smooth_rich = lowess(rich_clubness.mean(axis=1),ages,is_sorted=False)  
-	# sns.lineplot(smooth_rich[:,0],smooth_rich[:,1],color=sns.color_palette("Paired")[2])
-
-	# fig.tight_layout()  # otherwise the right y-label is slightly clipped
-	# plt.savefig('/%s/figures/fig1.pdf'%(homedir))
-
-
-
-
-		# outcome_model = sm.OLS.from_formula(formula='clubness ~ age + pc', data=node_df)
-		# mediator_model = sm.OLS.from_formula(formula='pc ~ age', data=node_df)
-		# med = Mediation(outcome_model, mediator_model, 'age', 'pc').fit(n_rep=10)
-		# club_pc_coefs[node] = med.total_effect.mean() / med.ACME_avg.mean() 
-
-
-
-# def clubness(graph):
-# 	rich_club_graph = graph.copy()
-# 	rich_club_graph.vs.select(rich_club=False).delete()
-	
-# 	diverse_club_graph = graph.copy()
-# 	diverse_club_graph.vs.select(diverse_club=False).delete()
-
-# 	return [sum(rich_club_graph.es['weight']),sum(diverse_club_graph.es['weight'])]
-
-# def run_clubness(graph):
-# 	graph.vs['diverse_club'] = adult_pc_club
-# 	graph.vs['rich_club'] = adult_degree_club
-# 	degree_emperical_phi,pc_emperical_phi = clubness(graph)
-# 	return [degree_emperical_phi,pc_emperical_phi]
-# 	# degree_randomized_phis = np.zeros((niters))
-# 	# pc_randomized_phis = np.zeros((niters))
-# 	# for i in range(niters):
-# 	# 	random_graph = club.preserve_strength(graph,randomize_topology=True,permute_strength=False)
-# 	# 	random_graph.vs['diverse_club'] = adult_pc_club
-# 	# 	random_graph.vs['rich_club'] = adult_degree_club
-# 	# 	degree_randomized_phis[i],pc_randomized_phis[i] = clubness(random_graph)
-	
-# 	# pc_normalized_phis = pc_emperical_phi / pc_randomized_phis.astype(float)
-# 	# degree_normalized_phis = degree_emperical_phi / degree_randomized_phis.astype(float)
-
-# 	# return [degree_normalized_phis,pc_normalized_phis]
-
-
-
-
-
-	# """
-	# fancier thing, where we only input the data from the missing ages, then do a rolling mean
-	# """
-	# #we are going to make a dataframe so we can do rolling mean
-	# rolling_df = pd.DataFrame(columns=['region','pc','age'])
-	# for i in range(400):
-	# 	rolling_df = rolling_df.append(pd.DataFrame(np.array([np.zeros((ages.shape[0]))+i,pc[:,i],ages]).transpose(),columns=['region','pc','age']),ignore_index=True)
-
-	# #some ages are missing, use linear regression to predict them
-	# all_ages=np.arange(np.min(ages),np.max(ages))
-	# missing_ages = []
-	# for a in all_ages:
-	# 	if a not in ages:missing_ages.append(a)
-
-	# missing_pc = np.zeros((400,len(missing_ages)))
-	# for i in range(400):
-	# 	pc_predict = LinearRegression()
-	# 	pc_predict = pc_predict.fit(ages.reshape(-1,1),pc[:,i].reshape(-1,1))
-	# 	missing_pc[i] = pc_predict.predict(np.array(missing_ages).reshape(-1,1)).flatten()
-	# #add in the missing pc
-	# for i in range(400):
-	# 	rolling_df = rolling_df.append(pd.DataFrame(np.array([np.zeros((len(missing_ages)))+i,missing_pc[i],np.array(missing_ages)]).transpose(),columns=['region','pc','age']),ignore_index=True)
-
-	# #sort by age
-	# rolling_df = rolling_df.sort_values(by=['age'])
-	
-	# #roll it out
-	# mean_age_pc = []
-	# for i in range(400):
-	# 	mean_age_pc.append(rolling_df[rolling_df.region==i].rolling(5*12).mean().pc.values)
-	# mean_ages =  np.around(rolling_df[rolling_df.region==i].rolling(5*12).mean().age.values/12.,0)
-
-	# mean_ages[np.isnan(mean_ages)] = 8
-	# mean_ages = mean_ages.astype(int).astype(str)
-	# mean_age_pc = np.array(mean_age_pc)
-
-	# take_subs = np.linspace(0,710,4).astype(int)
-	# for i,j in zip(take_subs[:-1],take_subs[1:]):
-	# 	i_age = mean_ages[i]
-	# 	j_age = mean_ages[j]
-	# 	print (i_age,j_age)
-	# 	this_pc = np.nanmean(mean_age_pc[:,i:j],axis=1)
-	# 	print (pearsonr(adult_pc.mean(axis=0),this_pc))
-	# 	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(this_pc,1),sns.diverging_palette(220, 10,n=1001)))
-	# 	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/pc_age_%s_%s'%(homedir,i_age,j_age))
-
-	# #save files
-	# plotted_ages = np.around(rolling_df[rolling_df.region==i].rolling(24).mean().age.values[take_ages]/12.,0)
-	# for i in range(5):
-	# 	print (pearsonr(adult_pc.mean(axis=0),mean_age_pc.transpose()[i]))
-	# 	colors = np.array(write_brains.make_heatmap(write_brains.cut_data(mean_age_pc.transpose()[i],1),sns.diverging_palette(220, 10,n=1001)))
-	# 	write_brains.write_cifti(colors=colors,atlas_path=atlas_path,out_path='/%s/brains/pc_age_%s'%(homedir,plotted_ages[i]))
+# def cluster_club_changes(n_components=5):
+# 	n_components= 2
+# 	pnc = load_pnc()
+# 	pnc.pc = remove_motion_sex(pnc,pnc.network.pc.mean(axis=1))
+# 	age_pc_corr = np.zeros(400)
+# 	for i in range(400):
+# 		age_pc_corr[i] = pearsonr(pnc.pc[:,i],pnc.measures.ageAtScan1.values)[0]
+#
+# 	km = KMeans(n_clusters=n_components)
+# 	km.fit(age_pc_corr.reshape(-1,1))
+# 	colors = np.array(pennlinckit.utils.make_heatmap(km.labels_,sns.diverging_palette(220, 10,n=1001)))
+# 	out_path='/{0}/brains/cluster_pc'.format(homedir)
+# 	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
+#
+# 	colors = np.array(pennlinckit.utils.make_heatmap(age_pc_corr,sns.diverging_palette(220, 10,n=1001)))
+# 	out_path='/{0}/brains/age_pc_corr'.format(homedir)
+# 	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
+
+
+# data = pennlinckit.data.dataset('hcp')
+# data.measures.columns.values
+# neo_plus = [14,39,54,9,59,24,29,45,40,5,55,30,50]
+# neo_neg = [22,36,31,21,26,41,51,11,8,28,33]
+#
+# neo_plus_scores = []
+# neo_neg_scores = []
+#
+# for n in neo_plus:
+# 	s = df['nffi_%s'%(n)][1:].values
+# 	s[s=='nan'] = np.nan
+# 	s = s.astype(float)
+# 	neo_plus_scores.append(s)
+#
+# for n in neo_neg:
+# 	s = df['nffi_%s'%(n)][1:].values
+# 	s[s=='nan'] = np.nan
+# 	s = s.astype(float)
+# 	neo_neg_scores.append(s)
